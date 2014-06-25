@@ -58,10 +58,11 @@ app.get('/refresh', function (req, res) {
 });
 
 var current_update_time = 0;
+var start_page = 1;
 
 function refresh(page) {
 
-    page = page || 250;
+    page = page || start_page;
 
     console.log("Refreshing : /v/2/organizations | Page : " + page);
 
@@ -107,7 +108,7 @@ function orgListResponse(statusCode, result) {
             for (var i = 0; i < result.data.items.length; i++) {
                 var org = result.data.items[i];
                 if(org.updated_at >= last_update_time) {
-                    if(page == 250 && i == 0) {
+                    if(page == start_page && i == 0) {
                         current_update_time = org.updated_at;
                     }
                     console.log("Pushing Org into orgUpdate Queue : " + org.updated_at + " : " + org.name + " : " + org.path);
