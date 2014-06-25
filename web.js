@@ -1,4 +1,4 @@
-// web.js
+
 var express = require("express");
 var logfmt = require("logfmt");
 var app = express();
@@ -17,21 +17,19 @@ var Db = require('mongodb').Db,
 
 var db;
 
+var ironcache = require('iron-cache');
+var iron_cache = ironcache.createClient({ project: '53ab0ea86bfde300090000c3', token: 'jOIamATE866T3I3JD6nacJ40KpE' });
+
+var ironmq = require('iron_mq');
+var iron_mq = new ironmq.Client({ project: '53ab0ea86bfde300090000c3', token: 'jOIamATE866T3I3JD6nacJ40KpE' });
+
+
 app.use(logfmt.requestLogger());
 app.use(express.bodyParser());
 
-
-app.get('/companies/refresh', function (req, res) {
-
-    refreshFundings();
-
-    var response = [];
-    res.send({'success': true, 'response': response});
-});
-
-
 var port = Number(process.env.PORT || 5000);
 
+// Start Server
 app.listen(port, function () {
     console.log("Listening on " + port);
 
@@ -46,96 +44,167 @@ app.listen(port, function () {
         });
     });
 
-    refreshFundings();
-
-    setInterval(refreshFundings, 1500000);
-
+    refresh();
+    setInterval(refresh, 3600000);
 });
 
+// Refresh API
+app.get('/refresh', function (req, res) {
 
-function refreshFundings() {
+    refresh();
 
-    console.log("\n\n\n -- Refreshing Funding Rounds -- ")
+    var response = [];
+    res.send({'success': true, 'response': response});
+});
+
+var current_update_time = 0;
+
+function refresh(page) {
+
+    page = page || 250;
+
+    console.log("Refreshing : /v/2/organizations | Page : " + page);
 
     var options = {
         host: 'api.crunchbase.com',
         port: 80,
-        path: '/v/2/organizations?user_key=64faa78375c0bbdf1626b3b282b9d932&page=1&order=updated_at+DESC',
+        path: '/v/2/organizations?user_key=64faa78375c0bbdf1626b3b282b9d932&page=' + page + '&order=updated_at+DESC',
         method: 'GET',
         headers: {
             'Content-Type': 'application/json'
         }
     };
 
-    console.log("Fetching all orgs sorted by Updated time : /v/2/organizations");
+    rest.getJSON(options, orgListResponse);
 
-    rest.getJSON(options,
-        function (statusCode, result) {
+}
 
-            setTimeout(function () {
+function orgListResponse(statusCode, result) {
 
-                console.log("Number of items : " + result.data.items.length);
+    var page = result.data.paging.current_page;
 
-                // TODO: Instead of all items, save the last updated_time and traverse till then.
-                for (var i = 0; i < 100; i++) {
+    console.log("Number of Orgs in Page " + result.data.paging.current_page + " : " + result.data.items.length);
 
-                    var org = result.data.items[i];
+    var last_update_time = 0;
 
-                    var options1 = {
-                        host: 'api.crunchbase.com',
-                        port: 80,
-                        path: '/v/2/' + org.path + '?user_key=64faa78375c0bbdf1626b3b282b9d932',
-                        method: 'GET',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        }
-                    };
-                    console.log("Fetching details of org : " + org.name + " : " + org.path);
-                    rest.getJSON(options1,
-                        function (statusCode1, result1) {
-                            if (result1.data.relationships.funding_rounds) {
-                                console.log("Number of funding rounds for : " + result1.data.properties.name + ' : ' + result1.data.relationships.funding_rounds.paging.total_items);
+    iron_cache.get('fundedapp-metadata', 'last_update_time',
+        function (err, item) {
 
-                                result1.data.relationships.funding_rounds.items.forEach(function (round) {
-                                    var pathItems = round.path.split("/");
+            if (err) { console.log(err); }
 
-                                    var funding_round_id = pathItems[pathItems.length - 1];
+            if (item) {
+                last_update_time = item.value;
+                console.log("Found last_update_time :" + last_update_time);
+            } else {
+                return;
+            }
 
-                                    console.log(funding_round_id);
+            console.log("Pushing all orgs into orgUpdate Queue till last_update_time : " + last_update_time);
 
-                                    db.collection('funding-rounds').findOne(
-                                        {uuid: funding_round_id},
-                                        function (err, item) {
-                                            if (!item) {
+            var found = false;
+            var toPush = [];
 
-                                                console.log("New Funding round found : " + funding_round_id);
+            for (var i = 0; i < result.data.items.length; i++) {
+                var org = result.data.items[i];
+                if(org.updated_at >= last_update_time) {
+                    if(page == 250 && i == 0) {
+                        current_update_time = org.updated_at;
+                    }
+                    console.log("Pushing Org into orgUpdate Queue : " + org.updated_at + " : " + org.name + " : " + org.path);
 
-                                                var options2 = {
-                                                    host: 'api.crunchbase.com',
-                                                    port: 80,
-                                                    path: '/v/2/' + round.path + '?user_key=64faa78375c0bbdf1626b3b282b9d932',
-                                                    method: 'GET',
-                                                    headers: {
-                                                        'Content-Type': 'application/json'
-                                                    }
-                                                };
+                    toPush.push({body: org.path});
 
-                                                console.log("Fetching details of funding round : " + funding_round_id);
-                                                rest.getJSON(options2,
-                                                    function (statusCode2, result2) {
-                                                        db.collection('funding-rounds').insert(result2.data, function (err, items) {
-                                                            console.log("Added to DB: %j", result2.data);
-                                                            //sendMail("mail@sivragav.com", result2.data.properties.name, "Got Aquired");
-                                                        });
-                                                    });
-                                            }
-                                        });
-                                });
-                            }
-                        });
+                } else {
+                    found = true;
+                    console.log("Done with Pushing orgs into orgUpdate Queue till last_update_time : " + last_update_time);
+                    break;
                 }
-            }, 1);
-        });
+            }
+
+            if(toPush.length > 0) {
+                iron_mq.queue("orgUpdate").post(
+                    toPush,
+                    function (error, body) {
+                        if(!error) {
+                            console.log("Pushed to IronMQ");
+                        } else {
+                            console.log(error);
+                        }
+                    });
+            }
+
+            if (!found && result.data.paging.next_page_url) {
+                setTimeout(refresh(result.data.paging.current_page + 1), 1000);
+            } else if (current_update_time != 0) {
+                iron_cache.put('fundedapp-metadata', 'last_update_time', { value: current_update_time }, function (err, res) {
+                    if (err) {
+                        console.log(res);
+                    }
+                });
+                console.log("Updated last_update_time: ", current_update_time);
+            }
+
+        }
+    );
+
+//                for (var i = 0; i < 100; i++) {
+//
+//                    var org = result.data.items[i];
+//
+//                    var options1 = {
+//                        host: 'api.crunchbase.com',
+//                        port: 80,
+//                        path: '/v/2/' + org.path + '?user_key=64faa78375c0bbdf1626b3b282b9d932',
+//                        method: 'GET',
+//                        headers: {
+//                            'Content-Type': 'application/json'
+//                        }
+//                    };
+//                    console.log("Fetching details of org : " + org.name + " : " + org.path);
+//                    rest.getJSON(options1,
+//                        function (statusCode1, result1) {
+//                            if (result1.data.relationships.funding_rounds) {
+//                                console.log("Number of funding rounds for : " + result1.data.properties.name + ' : ' + result1.data.relationships.funding_rounds.paging.total_items);
+//
+//                                result1.data.relationships.funding_rounds.items.forEach(function (round) {
+//                                    var pathItems = round.path.split("/");
+//
+//                                    var funding_round_id = pathItems[pathItems.length - 1];
+//
+//                                    console.log(funding_round_id);
+//
+//                                    db.collection('funding-rounds').findOne(
+//                                        {uuid: funding_round_id},
+//                                        function (err, item) {
+//                                            if (!item) {
+//
+//                                                console.log("New Funding round found : " + funding_round_id);
+//
+//                                                var options2 = {
+//                                                    host: 'api.crunchbase.com',
+//                                                    port: 80,
+//                                                    path: '/v/2/' + round.path + '?user_key=64faa78375c0bbdf1626b3b282b9d932',
+//                                                    method: 'GET',
+//                                                    headers: {
+//                                                        'Content-Type': 'application/json'
+//                                                    }
+//                                                };
+//
+//                                                console.log("Fetching details of funding round : " + funding_round_id);
+//                                                rest.getJSON(options2,
+//                                                    function (statusCode2, result2) {
+//                                                        db.collection('funding-rounds').insert(result2.data, function (err, items) {
+//                                                            console.log("Added to DB: %j", result2.data);
+//                                                            //sendMail("mail@sivragav.com", result2.data.properties.name, "Got Aquired");
+//                                                        });
+//                                                    });
+//                                            }
+//                                        });
+//                                });
+//                            }
+//                        });
+//                }
+
 }
 
 // Email Module
