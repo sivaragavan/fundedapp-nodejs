@@ -67,14 +67,14 @@ function refreshFundings() {
         }
     };
 
-    console.log("Fetching all orgs sorted by Created time : /v/2/organizations");
+    console.log("Fetching all orgs sorted by Updated time : /v/2/organizations");
 
     rest.getJSON(options,
         function (statusCode, result) {
 
-            console.log("Number of items : " + result.data.items.length);
-
             setTimeout(function () {
+
+                console.log("Number of items : " + result.data.items.length);
 
                 // TODO: Instead of all items, save the last updated_time and traverse till then.
                 for (var i = 0; i < result.data.items.length; i++) {
