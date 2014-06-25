@@ -77,7 +77,7 @@ function refreshFundings() {
                 console.log("Number of items : " + result.data.items.length);
 
                 // TODO: Instead of all items, save the last updated_time and traverse till then.
-                for (var i = 0; i < result.data.items.length; i++) {
+                for (var i = 0; i < 100; i++) {
 
                     var org = result.data.items[i];
 
